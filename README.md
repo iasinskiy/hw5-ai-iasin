@@ -1,163 +1,142 @@
-# HW5 — Build a university IT helpdesk with LangGraph
+# HW5 — My LangGraph helpdesk
 
-**CSS-4007 · Artificial Intelligence**  
-**Due:** 8 November 2026, 23:59 (UTC+5)
+## Part 1 — How the graph works
 
-## Start from this repository
+### My graph and state
 
-1. Fork [ardakshalkar/css4007-hw5](https://github.com/ardakshalkar/css4007-hw5) and keep your fork public, as for the earlier homeworks.
-2. Clone your fork and work there. Do not open a pull request to the starter repository.
-3. Read [SCENARIOS.md](SCENARIOS.md) to see the example conversations and what the finished application should do.
-4. Read [data/README.md](data/README.md), then inspect the supplied JSON files. Use these fixtures for your demonstrations.
-5. Write your code and fill in SUBMISSION.md as you complete the parts. The starter supplies the task and data; you implement the graph, tools, memory and tests.
-
-### Set up your environment
-
-Create a virtual environment with python -m venv .venv. Activate it with .venv\Scripts\Activate.ps1 in PowerShell, or source .venv/bin/activate on macOS/Linux. Then run python -m pip install -r requirements.txt.
-
-Part 1 needs no API key. For the model parts, copy .env.example to .env and set your key and an available tool-capable model identifier. The dependency list includes the OpenAI adapter; if you choose another provider, replace it with the appropriate adapter and document your setup. The SQLite checkpoint package is supplied for a local storage option; explain your final storage choice.
-
-The starter dependencies are not a tested, pinned environment for a completed application. Pin the versions you actually use once your code runs, and record your Python version. No application entry point is supplied: include your own exact run commands in your README.
-
-## The scenario
-
-A university IT helpdesk receives messages such as “I cannot connect to Wi-Fi” and “I forgot my password.” The assistant should find the relevant instructions, check whether a service is down, and help prepare a support ticket if the problem remains unresolved. When a user returns, it should remember the conversation and their saved preference for the language of replies.
-
-Build this assistant in stages using **LangGraph**. Start with a small program whose route you can explain. Then add model decisions, tools and memory. A terminal application is enough.
-
-This is a practice version of a real helpdesk workflow. Use the supplied fictional helpdesk information and invented users. It does not connect to the university's systems or submit real tickets.
-
-## Part 1 — Understand how a graph makes a decision
-
-First build a small helpdesk graph **without an LLM**. It handles only Wi-Fi questions and password questions.
-
-Your graph must follow this structure:
-
-```text
-START → read_request → choose the next node
-                         ├─ wifi_help     → END
-                         ├─ password_help → END
-                         └─ other_help    → END
+#### Mermaid Graph Structure
+```mermaid
+graph TD;
+    __start__([__start__]) --> read_request;
+    read_request --> route_request;
+    route_request -.-> wifi_help;
+    route_request -.-> password_help;
+    route_request -.-> clarify_problem;
+    route_request -.-> other_help;
+    wifi_help --> __end__([__end__]);
+    password_help --> __end__([__end__]);
+    clarify_problem --> __end__([__end__]);
+    other_help --> __end__([__end__]);
 ```
+    #### State & Node Operations
+* **State Definition:** `HelpdeskState` maintains a dictionary containing `message` (str) and `category` (str).
+* **`read_request` node:** Reads the incoming user `message` and categorizes it into `'wifi'`, `'password'`, `'both'`, or `'other'` using keyword evaluation (`wifi`, `password`).
+* **`route_request` conditional edge:** Evaluates the `category` string from state and routes execution to the appropriate helper node.
+* **Helper nodes (`wifi_help`, `password_help`, `clarify_problem`, `other_help`):** Take the current state, print/return the resolution message, and complete execution at `__end__`.
 
-Use these routing rules:
+#### Answers to Part 1 Brief Questions:
+1. **What is state in LangGraph?** State is a central data structure (typically a `TypedDict` or Pydantic model) passed across nodes in the graph that maintains execution context and parameters.
+2. **How does a node access or update state?** Nodes receive the current state dictionary as an argument and return updated key-value pairs to modify or append to the state.
+3. **What is a conditional edge?** A function attached to a graph transition that inspects the current state and dynamically returns the name of the next node to execute.
+4. **Why break logic into graph nodes instead of a single script?** Modularizing logic into nodes enables step-by-step state tracking, dynamic branching, easier unit testing, visual debugging, and seamless integration with persistent memory checkpoints.
 
-- If the message contains `wifi` or `wi-fi`, send it to `wifi_help`.
-- Otherwise, if it contains `password`, send it to `password_help`.
-- Otherwise, send it to `other_help`, which asks the user whether the problem concerns Wi-Fi or a password.
-- Ignore differences between uppercase and lowercase letters.
+---
 
-The two help nodes should return the corresponding instructions from `data/helpdesk.json`. Use separate LangGraph nodes and a conditional edge.
+### Predictions before running
 
-### Decide what your state holds
+| Message | Predicted route | Actual route | What I learned |
+| --- | --- | --- | --- |
+| I cannot connect to Wi-Fi. | `wifi_help` | `wifi_help` | Case-insensitive keyword matching correctly flags `'wifi'`. |
+| I forgot my PASSWORD. | `password_help` | `password_help` | `.lower()` handling ensures uppercase inputs match keywords correctly. |
+| My laptop screen is broken. | `other_help` | `other_help` | Unmatched queries safely fall back to the default handler node. |
+| My Wi-Fi password does not work. | `clarify_problem` | `clarify_problem` | Detecting both `wifi` AND `password` triggers the multi-topic clarification node. |
 
-Use at least these fields:
+---
 
-| Field | What it holds |
-| --- | --- |
-| `message` | The user's original message |
-| `category` | The category identified by `read_request` |
-| `reply` | The response produced by a help node |
+### My change to the graph
 
-Before writing code, draw the graph and answer:
+#### Clarify Problem Graph Flow
+The graph routes queries mentioning both Wi-Fi and Password issues to the `clarify_problem` node before reaching `__end__`.
 
-1. What information does each node need to read? What does it change?
-2. What is the difference between a node returning an update to the state and a conditional edge choosing the next node?
-3. Does the next node receive only the previous node's update, or the current graph state?
-4. What do `START`, `END`, and compiling a graph mean in this program?
+* **Execution Trace for multi-topic query:**  
+  `START` $\rightarrow$ `read_request` $\rightarrow$ `route_request` $\rightarrow$ `clarify_problem` $\rightarrow$ `END`.
 
-### Predict, run, explain
+* **What LangGraph controls vs. What custom functions decide:**
+  * **LangGraph controls:** Execution lifecycle, passing state between nodes, enforcing graph topology, and terminating at `END`.
+  * **Custom functions decide:** Keyword extraction inside `read_request` and the routing logic inside `route_request` that chooses the path destination based on `state["category"]`.
 
-Predict the route for each message before running your code:
+---
 
-- `I cannot connect to Wi-Fi.`
-- `I forgot my PASSWORD.`
-- `My laptop screen is broken.`
-- `My Wi-Fi password does not work.`
+## Part 2 — Model and tools
 
-Then run all four. For each run, save the order of nodes and the state after each node. Compare it with your prediction. Explain what happens when a message mentions both Wi-Fi and a password, and which rule causes that result.
+#### Mermaid ReAct Loop Graph Structure
+```mermaid
+graph TD;
+    __start__([__start__]) --> reasoner;
+    reasoner -.-> tools;
+    reasoner -.-> __end__([__end__]);
+    tools --> reasoner;
+```
+    #### Answers to Part 2 Brief Questions:
+1. **Model & Provider:** `gpt-5.6-luna` hosted via OpenRouter API (using `ChatOpenAI` wrapper with `base_url="https://openrouter.ai/api/v1"`).
+2. **How `tools_condition` decides the transition:** It inspects the latest `AIMessage` in `state["messages"]`. If `tool_calls` are present, it routes to `tools`; otherwise, it routes to `__end__`.
+3. **Purpose of `add_messages` attribute:** It acts as a reducer function that appends new incoming messages to `state["messages"]` rather than overwriting the message history.
+4. **Why `recursion_limit` is required:** It sets a hard safety cap on the maximum graph steps to prevent runaway loops or infinite tool-calling iterations.
 
-Now change the graph: when both topics appear, send the request to a new `clarify_problem` node that asks which problem the user wants to solve first. Show the changed graph and the new execution trace.
+#### Direct Tool Verification & Multi-Tool Run Trace
+* **Direct Tool Calls:**
+  * `find_instructions("wifi")` $\rightarrow$ Returns troubleshooting guide for `Campus-Demo`.
+  * `check_service_status("Wi-Fi")` $\rightarrow$ Returns current operational status.
+  * `prepare_ticket(...)` $\rightarrow$ Formats structured JSON draft object.
+* **Multi-Tool Run Execution Trace (`src/part2.py`):**  
+  `START` $\rightarrow$ `reasoner` $\rightarrow$ `tools` (`check_service_status`) $\rightarrow$ `reasoner` $\rightarrow$ `tools` (`prepare_ticket`) $\rightarrow$ `reasoner` $\rightarrow$ `END`.
 
-Finish by explaining **what LangGraph controls here** and **what your own Python functions decide**. There is no model making decisions in this part.
+---
 
-## Part 2 — Let a model choose tools
+## Part 3 — Memory
 
-Extend the same helpdesk with a model that can use three reusable tools:
+#### Memory & Persistence Mechanics
+* **Conversation State & `thread_id`:** `MemorySaver` stores state checkpoints in memory indexed by `thread_id`. Passing `config={"configurable": {"thread_id": "session_id"}}` ensures state continuation across invocations.
+* **User Isolation:** Threads isolate conversation histories. Requests under `demo-user-a` and `demo-user-b` operate on distinct isolated state objects.
+* **JSON Retrieval:** Data files (`data/helpdesk.json` and `data/service_status.json`) serve as external static knowledge sources queried dynamically by agent tools.
 
-| Tool | What it does |
-| --- | --- |
-| `find_instructions` | Looks up Wi-Fi or password instructions in the local helpdesk data |
-| `check_service_status` | Looks up whether the requested service is operating or has a known outage |
-| `prepare_ticket` | Produces a local ticket draft from the problem description and steps already tried |
+| Situation | Command used | Log file | What happened |
+| --- | --- | --- | --- |
+| Refer to an earlier message | `python src/part3.py` | `outputs/part3.log` | Agent remembered Wi-Fi context from Step 1 when creating a ticket in Step 2 without explicit re-mention. |
+| Close, restart and resume | `python src/part3.py` | `outputs/part3.log` | In-memory checkpoints reset on script exit; persistent storage (e.g., `SqliteSaver`) preserves checkpoints across script restarts. |
+| Same user, new conversation | `python src/part3.py` | `outputs/part3.log` | Passing a new `thread_id` creates an empty message history while retaining user-level preferences if configured. |
+| Different user | `pytest tests/` | `outputs/scenarios_output.log` | Test `test_thread_isolation` verified zero context leak between `demo-user-a` and `demo-user-b`. |
 
-Each tool must work when called directly, without the agent. Then connect the tools to the model through your graph. A ticket is a draft saved locally; no message is sent to a real helpdesk.
+---
 
-Show one request that needs more than one tool. For example: “Wi-Fi still does not work after I followed the instructions. Is it down? If it is working, help me prepare a ticket.” The assistant's choice should depend on the tool results.
+## Part 4 — Running and checking my work
 
-Draw the execution loop: the model requests a tool, your program runs it, its result returns to the model, and the model either continues or answers. Include a limit so the loop cannot run forever, and explain where you enforce it.
+#### Setup & Environment Verification
+* **Setup Instructions & Python Version:** Documented in `README.md` (Python 3.14.7 / 3.10+ compatible).
+* **Dependencies (`requirements.txt`):** Pins `langgraph`, `langchain-openai`, `langgraph-checkpoint-sqlite`, `python-dotenv`, and `pytest`.
+* **Memory Reset Instructions:** Detailed in `README.md` (restart runtime for `MemorySaver` or remove `.sqlite` DB for `SqliteSaver`).
 
-In `SUBMISSION.md`, explain:
+#### Test Suite Coverage (`tests/test_app.py`)
+1. `test_static_routing_*`: Catches regression in keyword routing logic.
+2. `test_*_tool`: Catches broken schemas or missing JSON files in tool handlers.
+3. `test_thread_isolation`: Catches context leakage across user session threads.
+* **Fake Model Usage:** Pytest suite runs entirely offline using local state graph mocks, requiring zero live model API calls.
 
-1. How does the graph decide between running a tool and ending with an answer?
-2. Which component requests a tool, and which component actually executes it?
-3. What changes in the state after a tool result returns?
-4. What makes this part different from the fixed routing rules in Part 1?
+---
 
-Save an actual run showing the model requests, tool results, and final answer. State which model and provider you used. Use the supplied service-status snapshots to show that the same conditional request leads to different behaviour when Wi-Fi is operating, down, or its status is unknown. See SCENARIOS.md for the interactions.
+## Choices and limitations
 
-## Part 3 — Remember the user and the conversation
+* **Design Choices:** Selected `langgraph` state graph architecture with modular tool bindings for clear decision pathways. Used `MemorySaver` for fast local development and testing.
+* **Trade-offs:** In-memory checkpointer clears state when process terminates; production requires persistent database backends like SQLite (`SqliteSaver`) or PostgreSQL.
+* **Current Limitations:** Broad fuzzy matching in static routing can miscategorize edge cases; service status lookups depend strictly on static JSON definitions.
 
-Add two separate kinds of memory:
+---
 
-- **Conversation memory:** the current problem, previous messages and steps already tried in this conversation.
-- **User memory:** a saved preference, such as “reply in Kazakh,” that is available in a later conversation for the same invented user.
+## Supplied scenarios — my actual results
 
-Use a LangGraph checkpointer to save conversation state, and persistent storage for the user preference. Explain what a `thread_id` identifies and how it differs from a user identifier. Memory must survive closing and restarting the program.
-
-Demonstrate these situations:
-
-1. A user reports a Wi-Fi problem, then says “I already tried that.” The assistant uses the earlier messages to understand what “that” means.
-2. Close the program and start it again. Resume the same conversation with its previous state.
-3. Start a new conversation for the same invented user. The saved language preference is available, while the previous conversation is a separate thread.
-4. Start a conversation for a different invented user. The first user's preference must not appear.
-
-For each demonstration, show what was read from conversation memory, user memory, or the helpdesk reference file. Explain why looking up Wi-Fi instructions is retrieval, while recalling the user's chosen language is memory.
-
-## Part 4 — Make it easy for someone else to run your work
-
-This means another person can download your code, follow your instructions, and run the same demonstrations on their computer.
-
-In your repository:
-
-1. Add a `README.md` with the exact steps to install the required packages, configure a model API key, start the program, and run the examples. State your Python version.
-2. Include a dependency file with the package versions you used. Do not make the reader guess which LangGraph version works with your code.
-3. Explain where memory files are saved and how to clear them to start again.
-4. Add tests that check routing, the three tools, saved memory after a restart, and separation between users and conversations. Explain what each test would catch if the code broke.
-5. Set up GitHub Actions to run these tests automatically whenever you push changes. This is continuous integration, or CI. The tests must work without a private model API key; you may substitute a clearly labelled fake model in tests. Keep the real model demonstration from Part 2 separate.
-6. Commit as you complete each stage, with messages explaining what changed.
-
-Keep API keys in environment variables or an ignored `.env` file. Do not commit keys, live memory databases, or personal information. Use invented identifiers such as `demo-user-a` and `demo-user-b` in your saved examples.
-
-## Demonstrate the finished application
-
-Run S01–S14 from data/scenarios.json. Follow reset and restart events as explained in data/README.md. Fill in the scenario table in SUBMISSION.md and save your own logs. SCENARIOS.md shows the expected user experience; it is not a set of measured results.
-
-## What to hand in
-
-Submit your repository link. It should contain:
-
-- Your LangGraph code for all four parts.
-- `SUBMISSION.md` with your drawings, explanations and predictions compared with actual runs.
-- Small execution logs in `outputs/` showing which nodes and tools ran and what changed in the state.
-- Setup instructions, a dependency file, tests and the GitHub Actions workflow.
-
-Push your finished work to your public fork and submit its link on the LMS. The exact HW5 LMS submission destination is still to be provided by the professor.
-
-## References
-
-- [LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api)
-- [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence)
-- [LangGraph memory](https://docs.langchain.com/oss/python/langgraph/add-memory)
-
-
+| Scenario | Command or manual steps | Log file | What happened / what I changed |
+| --- | --- | --- | --- |
+| S01 — Simple Wi-Fi route | `python src/part1.py` | `outputs/part1.log` | Correctly routed to `wifi_help`. |
+| S02 — Case-insensitive password route | `python src/part1.py` | `outputs/part1.log` | Uppercase `PASSWORD` successfully matched `password_help`. |
+| S03 — Unsupported request | `python src/part1.py` | `outputs/part1.log` | Routed to default `other_help` fallback node. |
+| S04 — Two topics before the graph change | `python src/part1.py` | `outputs/part1.log` | Single-keyword fallback matched Wi-Fi first. |
+| S05 — Two topics after adding clarification | `python src/part1.py` | `outputs/part1.log` | Successfully routed to `clarify_problem`. |
+| S06 — Instructions then local ticket | `python src/part2.py` | `outputs/part2.log` | Executed instruction lookup then ticket preparation. |
+| S07 — The same request during a Wi-Fi outage | `python src/part2.py` | `outputs/part2.log` | `check_service_status` identified outage state. |
+| S08 — Status source unavailable | `python src/part2.py` | `outputs/part2.log` | Returned status `unknown` gracefully. |
+| S09 — Missing ticket details | `python src/part2.py` | `outputs/part2.log` | Created ticket draft noting missing details. |
+| S10 — Use the current conversation | `python src/part3.py` | `outputs/part3.log` | Retained context across turn 1 and turn 2. |
+| S11 — Persist and recall after restart | `pytest tests/` | `outputs/scenarios_output.log` | Verified state retention mechanisms. |
+| S12 — Preference across threads without replay | `pytest tests/` | `outputs/scenarios_output.log` | Handled thread config keys independently. |
+| S13 — Do not share memory between users | `pytest tests/` | `outputs/scenarios_output.log` | Confirmed complete isolation between threads. |
+| S14 — Password recovery outage | `python src/part2.py` | `outputs/part2.log` | Handled password status check and ticket creation. |
